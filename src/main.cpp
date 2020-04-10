@@ -12,146 +12,220 @@
 */
 #include <stdio.h>
 #include <string.h>
-#include <Ethernet.h>
+#include <Ethernet3.h>
+// #include <ICMPPing.h>
 
-// Uses Ticker to do a nonblocking loop every 1 second to check status
-#include <Ticker.h>
+// Uses Ticker to do a nonblocking loop every 1 second to check gate_state
+#include "Tasker.h"
 #include <PubSubClient.h>
 
-unsigned long lastmillis;
+#include "secrets.h"
 
-const char* sVersion = "0.8.24";
+// MQTT Gate commands, topic and paylaods
+#define MQTT_GATE_TOPIC_CMD "garage/gate/cmd"
+#define PAYLOAD_CMD_GATE_OPEN "OPEN"
+#define PAYLOAD_CMD_GATE_CLOSE "CLOSE"
+#define PAYLOAD_CMD_GATE_STOP "STOP"
 
-#define CLOSED LOW
-#define OPEN HIGH
+// MQTT Gate state feedback, topic and paylaods
+#define MQTT_GATE_TOPIC_STATUS "garage/gate/state"
+#define PAYLOAD_GATE_OPENED "open"
+#define PAYLOAD_GATE_OPENING "opening"
+#define PAYLOAD_GATE_CLOSED "closed"
+#define PAYLOAD_GATE_CLOSING "closing"
+// Gate states --- must match payload. Limited due to limitations in Home Assistant MQTT Cover. Might be extended in future.
+const char* gate_state_payloads[] = { PAYLOAD_GATE_OPENED, PAYLOAD_GATE_OPENING, PAYLOAD_GATE_CLOSED, PAYLOAD_GATE_CLOSING };
+enum gate_states { GATE_OPEN, GATE_OPENING, GATE_CLOSED, GATE_CLOSING };
+// MQTT Light commands, topic and paylaods
+#define MQTT_LIGHT_TOPIC_CMD "garage/light/cmd"
+#define PAYLOAD_CMD_LIGHT_ON "ON"
+#define PAYLOAD_CMD_LIGHT_OFF "OFF"
 
-//Your MQTT Broker
-const char* mqtt_server = "hwr-pi";
+// MQTT Light state feedback, topic and paylaods
+#define MQTT_LIGHT_TOPIC_STATUS "garage/light/state"
+#define PAYLOAD_LIGHT_ON "on"
+#define PAYLOAD_LIGHT_OFF "off"
+const char* light_state_payloads[] = { PAYLOAD_LIGHT_ON, PAYLOAD_LIGHT_OFF };
+enum light_states { LIGHT_ON, LIGHT_OFF };
 
-// MQTT client is also host name for WIFI
-const char* mqtt_client_id = "garagentor";
+// Please update mac and IP address according to your local network
+#if defined(WIZ550io_WITH_MACADDRESS) // Use assigned MAC address of WIZ550io
+;
+#else
+uint8_t mac[] = MAC;
+#endif  
+IPAddress broker = BROKER; 
 
-const char* mqtt_topic_cmd = "garage/gate/cmd";
-const char* mqtt_topic_status = "garage/gate/status";
-const char* mqtt_topic_action = "tuer/garagentor/action";
-
-
-byte mac[]    = {  0x00, 0xAA, 0xBB, 0xCC, 0xDE, 0x02 };  // Ethernet shield (W5100) MAC address
-IPAddress ip(192, 168, 2, 105);                           // Ethernet shield (W5100) IP address
-
-
+// EthernetClient client;
 EthernetClient ethClient;
 PubSubClient client(ethClient);
 
+// int gpio_led = 2; // internal blue LED
+int gpio_state_gate_open = 2;
+int gpio_state_gate_closed = 3;
+int gpio_state_light_on = 4; 
 
-int gpioLed = 2; // internal blue LED
-
-int gpioO1TorOben = 5;  // D1
-int gpioO2TorUnten = 0; // D3
-
-int gpioS4CmdZu = 14;          // D5
-int gpioS5CmdLampeToggle = 12; // D6
-int gpioS2CmdAuf = 13;         // D7
-int gpioS3CmdHalb = 15;        // D8
+int gpio_command_gate_open = 8; 
+int gpio_command_gate_close = 9; 
+int gpio_command_gate_stop = 10;
+int gpio_command_light_on = 12; 
 
 
-int GATE_ERROR=0;
-int GATE_CLOSED=1;
-int GATE_OPEN=2;
-int GATE_HALF_OPEN=3;
+int gate_state = NULL;
+int light_state = NULL;
+const char* last_command = NULL;
+unsigned long lastmillis;
+unsigned long force_state_update_timer = 60000;
+bool gate_moving = false;
+bool gate_state_changed = false;
+bool light_state_changed = false;
+bool force_state_update = false;
 
-const char* status_message[] = { "Error", "Closed", "Open", "Half open" };
-
-int status = GATE_ERROR;
-
-bool SendUpdate = false;
-
-Ticker ticker;
-
+Tasker tasker;
 
 // STATES SHOULD BE: OPEN, OPENING, CLOSED, CLOSING, ERROR
 
 //check gpio (input of hoermann uap1)
-void status_gate() {
-  int myOldStatus = status;
- 
-  if ((digitalRead(gpioO1TorOben) == OPEN  ) && (digitalRead(gpioO2TorUnten) == OPEN  )) { status = GATE_HALF_OPEN; }
-  if ((digitalRead(gpioO1TorOben) == CLOSED) && (digitalRead(gpioO2TorUnten) == OPEN  )) { status = GATE_OPEN; }
-  if ((digitalRead(gpioO1TorOben) == OPEN  ) && (digitalRead(gpioO2TorUnten) == CLOSED)) { status = GATE_CLOSED; }
-  if ((digitalRead(gpioO1TorOben) == CLOSED) && (digitalRead(gpioO2TorUnten) == CLOSED)) { status = GATE_ERROR; }
+void check_gate_state() {
+  int prev_gate_state = gate_state;
 
-  if ( myOldStatus != status )
+  if ((digitalRead(gpio_state_gate_open) == LOW) && (digitalRead(gpio_state_gate_closed) == HIGH  )) { 
+    gate_state = GATE_OPEN; 
+    gate_moving = false;
+    }
+  else if ((digitalRead(gpio_state_gate_open) == HIGH  ) && (digitalRead(gpio_state_gate_closed) == LOW)) { 
+    gate_state = GATE_CLOSED; 
+    gate_moving = false;
+    }
+  else if ((digitalRead(gpio_state_gate_open) == LOW) && (digitalRead(gpio_state_gate_closed) == LOW)) { 
+    if (gate_moving == false) {
+      if (last_command == PAYLOAD_CMD_GATE_OPEN) {
+        gate_state = GATE_OPENING;
+        gate_moving = true;
+      }
+      else if (last_command == PAYLOAD_CMD_GATE_CLOSE) {
+        gate_state = GATE_CLOSING;
+        gate_moving = true;
+      }
+    }
+    else {
+      if (last_command == PAYLOAD_CMD_GATE_STOP) {
+         gate_state = GATE_OPEN;
+         gate_moving = false;
+      }
+    }
+  }
+
+  if ( prev_gate_state != gate_state ) {
+    Serial.print("dbg: Status has changed: ");
+    gate_state_changed = true;
+  }
+}
+
+
+void check_light_state() {
+  int prev_light_state = light_state;
+  if (digitalRead(gpio_state_light_on) == HIGH) { 
+    light_state = LIGHT_ON; 
+  }
+  else { 
+    light_state = LIGHT_OFF; 
+  }
+  if ( prev_light_state != light_state )
   {
     Serial.print("dbg: Status has changed: ");
-    Serial.println(status_message[status]);
+    light_state_changed = true;
+  }
+}
+
+
+void trigger_gate(int pin, bool inverted=false) {
+  if (inverted) {
+    digitalWrite(pin, LOW);
+    delay(5000);
+    digitalWrite(pin, HIGH);
+  }
+  else {
+    digitalWrite(pin, HIGH);
+    delay(5000);
+    digitalWrite(pin, LOW);
+  }
+}
+
+
+void open_gate() {
+  Serial.println("open_gate starting");
+  trigger_gate(gpio_command_gate_open);
+  Serial.println("open_gate finished");
+}
+
+
+void close_gate() {
+  Serial.println("close_gate starting");
+  trigger_gate(gpio_command_gate_close);
+  Serial.println("close_gate finished");
+}
+
+void stop_gate() {
+  Serial.println("stop_gate starting");
+  trigger_gate(gpio_command_gate_stop, true);
+  Serial.println("stope_gate finished");
+}
+
+void set_light(bool on) {
+  if (on) {
+    
+    Serial.println("Turning light on");
+    digitalWrite(gpio_command_light_on, HIGH);
+  }
+  else {
+    Serial.println("Turning light off");
+    digitalWrite(gpio_command_light_on, LOW);
   }
 }
 
 
 
-void open_gate() {
-      Serial.println("open_gate starting");
-      client.publish(mqtt_topic_status, "opening");
-
-      digitalWrite(gpioS2CmdAuf, HIGH);
-      delay(1000);
-      digitalWrite(gpioS2CmdAuf, LOW);
-
-      Serial.println("open_gate finished");
-      client.publish(mqtt_topic_status, "open");
-}
-
-
-void close_gate() {
-      Serial.println("close_gate starting");
-      client.publish(mqtt_topic_status, "closing");
-
-      digitalWrite(gpioS4CmdZu, HIGH);
-      delay(1000);
-      digitalWrite(gpioS4CmdZu, LOW);
-
-      Serial.println("close_gate finished");
-      client.publish(mqtt_topic_status, "closed");
-}
-
-
-
-void MqttCallback(char* topic, byte* payload, unsigned int length) {
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = 0;
 
   Serial.println("mqtt call back");
   Serial.println( topic );
   Serial.println(  (const char *) payload );
-  
-  if ( strstr( (const char *)payload, "zu") != NULL) {
-    close_gate();
+  if (strstr( MQTT_GATE_TOPIC_CMD, topic) != NULL) {
+    if ( strstr( (const char *)payload, PAYLOAD_CMD_GATE_OPEN) != NULL) {
+      open_gate();
+    }
+    else if ( strstr( (const char *)payload, PAYLOAD_CMD_GATE_CLOSE) != NULL) {
+      close_gate();
+    }
+    else if ( strstr( (const char *)payload, PAYLOAD_CMD_GATE_STOP) != NULL) {
+      stop_gate();
+    }
   }
-  if ( strstr( (const char *)payload, "auf") != NULL) {
-    open_gate();
-  }
-  if ( strstr( (const char *)payload, "version") != NULL) {
-    client.publish(mqtt_topic_version, sVersion);
-    long lRssi = WiFi.RSSI();
-    char sBuffer[50];
-    sprintf(sBuffer, "RSSI = %d dBm", lRssi);
-    client.publish(mqtt_topic_wifi, sBuffer);
-  }
-  if ( strstr( (const char *)payload, "status") != NULL) {
-    status_gate();
-    client.publish(mqtt_topic_status, status_message[status]);
+  else if (strstr( MQTT_LIGHT_TOPIC_CMD, topic) != NULL) {
+    if ( strstr( (const char *)payload, PAYLOAD_CMD_LIGHT_ON) != NULL) {
+      set_light(true);
+    }
+    else if ( strstr( (const char *)payload, PAYLOAD_CMD_LIGHT_OFF) != NULL) {
+      set_light(false);
+    }
   }
 }
 
 
-void MqttReconnect() {
+void mqtt_reconnect() {
   while (!client.connected()) {
+    Serial.println(Ethernet.linkReport()); 
     Serial.print("Connect to MQTT Broker "); 
-    Serial.println( mqtt_server );
+    Serial.println( broker );
     delay(1000);
-    if (client.connect(mqtt_client_id)) {
+    if (client.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PWD)) {
       Serial.print("connected: topic ");  
-      Serial.println( mqtt_topic_cmd );
-      client.subscribe(mqtt_topic_cmd);
+      Serial.println( MQTT_GATE_TOPIC_CMD  );
+      client.subscribe(MQTT_GATE_TOPIC_CMD);
+      Serial.println( MQTT_LIGHT_TOPIC_CMD  );
+      client.subscribe(MQTT_LIGHT_TOPIC_CMD);
     } else {
       Serial.print("failed: ");
       Serial.print(client.state());
@@ -163,81 +237,61 @@ void MqttReconnect() {
 }
 
 
-
-void CheckDoorStatus() {
-  int oldStatus = status;
-  status_gate();
-  if (oldStatus == status)
-  {
-    //new status is the same as the current status, return
-    return;
-  }
-  else
-  {
-    Serial.print("Status has changed to: ");
-    Serial.println(status_message[status]);
-    SendUpdate = true;
-    digitalWrite(gpioLed, (status != GATE_CLOSED) ); // LED on bei Fehler  
-    delay(1000);
-    digitalWrite(gpioLed, (status == GATE_CLOSED) ); // LED on bei Fehler
-  }
-}
-
-
 void setup(void) {
+  Ethernet.setHostname(MQTT_CLIENT_ID);
+  Ethernet.begin(mac);
 
-  Serial.begin(115200);
-  delay(300);
-  Serial.println("\n\nstarte hoermann garage...");
-  Serial.println();
-  Serial.println(sVersion);
+  //Your MQTT Broker
+  Serial.begin(9600);
+  delay(1000);
+
+  Serial.println("\n\Booting hoermann garage controller");
   Serial.println();
 
   lastmillis = millis();
 
-  pinMode(gpioO1TorOben, INPUT_PULLUP);
-  pinMode(gpioO2TorUnten, INPUT_PULLUP);
+  pinMode(gpio_state_gate_open, INPUT_PULLUP);
+  pinMode(gpio_state_gate_closed, INPUT_PULLUP);
+  pinMode(gpio_state_light_on, INPUT_PULLUP);
 
-  pinMode(gpioLed, OUTPUT);
+  // pinMode(gpio_led, OUTPUT);
 
-  pinMode(gpioS4CmdZu, OUTPUT);
-  digitalWrite(gpioS4CmdZu, LOW);
-  pinMode(gpioS5CmdLampeToggle, OUTPUT);
-  digitalWrite(gpioS5CmdLampeToggle, LOW);
-  pinMode(gpioS2CmdAuf, OUTPUT);
-  digitalWrite(gpioS2CmdAuf, LOW);
-  pinMode(gpioS3CmdHalb, OUTPUT);
-  digitalWrite(gpioS3CmdHalb, LOW);
-
-
-
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(MqttCallback);
-  MqttReconnect();
-  client.publish(mqtt_topic_version, sVersion);
+  pinMode(gpio_command_gate_close, OUTPUT);
+  digitalWrite(gpio_command_gate_close, LOW);
+  pinMode(gpio_command_light_on, OUTPUT);
+  digitalWrite(gpio_command_light_on, LOW);
+  pinMode(gpio_command_gate_open, OUTPUT);
+  digitalWrite(gpio_command_gate_open, LOW);
+  pinMode(gpio_command_gate_stop, OUTPUT);
+  digitalWrite(gpio_command_gate_stop, HIGH);
 
 
 
-  // warte auf stabile UAP1-Ausgänge nach Strom-AUS
+  client.setServer(broker, BROKER_PORT);
+  client.setCallback(mqtt_callback);
+  mqtt_reconnect();
+
+
+  // wait for stable UAP1 outputs after power OFF
   for ( int iLoop=0; iLoop<12; iLoop++) {
-    digitalWrite(gpioLed, HIGH );
-    status_gate();
+    // digitalWrite(gpio_led, HIGH );
+    check_gate_state();
     delay(250);
-    digitalWrite(gpioLed, LOW );
-    status_gate();
-    delay(250);
+    // digitalWrite(gpio_led, LOW );
+    // check_gate_state();
+    // delay(250);
   }
 
-  //Check the door status every 1 second
-  ticker.attach(1, CheckDoorStatus);
-
+  //Check the gate gate_state every 1 second
+  tasker.setInterval(check_gate_state, 1000);
 }
-
 
 
 void loop(void) {
 
-  if (!client.connected()) { MqttReconnect(); }
+  if (!client.connected()) { 
+    mqtt_reconnect(); 
+  }
   client.loop();
 
   if (millis() - lastmillis >  60000) {
@@ -245,16 +299,25 @@ void loop(void) {
     Serial.print(millis()/60000);
     Serial.println(" minutes");
     lastmillis = millis();
-    SendUpdate = true;
+    gate_state_changed = true;
   }
 
-  if (SendUpdate)
+  check_gate_state();
+  if (gate_state_changed)
   {
-    Serial.print("mqtt status update: ");
-    Serial.println(status_message[status]);
-    client.publish(mqtt_topic_status, status_message[status]);
-    SendUpdate = false;
+    Serial.print("mqtt gate_state update: ");
+    Serial.println(gate_state_payloads[gate_state]);
+    client.publish(MQTT_GATE_TOPIC_STATUS, gate_state_payloads[gate_state]);
+    gate_state_changed = false;
   }
 
+  check_light_state();
+  if (light_state_changed)
+  {
+    Serial.print("mqtt light_state update: ");
+    Serial.println(light_state_payloads[light_state]);
+    client.publish(MQTT_LIGHT_TOPIC_STATUS, light_state_payloads[light_state]);
+    light_state_changed = false;
+  }
 }
 
