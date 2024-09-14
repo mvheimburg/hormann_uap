@@ -59,9 +59,9 @@ void Gate::checkState() {
 		long now = millis();
 		long delta = this->last_move_t - now;
 		if (this->state == GATE_OPENING){
-			this->position += round((delta / GATE_SPD_UP ) * 100);
+			this->position = min(this->position+round((delta / GATE_SPD_UP ) * 100), GATE_POS_OPEN);
 		} else if (this->state == GATE_CLOSING){
-			this->position -= round((delta / GATE_SPD_DWN ) * 100);
+			this->position = max(this->position-round((delta / GATE_SPD_DWN ) * 100) , GATE_POS_CLOSED);
 		}
 		this->publishPos();
 	}
@@ -71,13 +71,17 @@ void Gate::checkState() {
 }
 
 void Gate::publishState() {
-  Serial.println("mqtt gate_state update: ");
-  Serial.println(gate_state_payloads[this->state]);
-  this->client->publish(MQTT_GATE_TOPIC_STATUS, gate_state_payloads[this->state]);
+	if (this->state != GATE_UNKNOWN){
+		Serial.println("mqtt gate_state update: /n");
+		Serial.println(gate_state_payloads[this->state]);
+		this->client->publish(MQTT_GATE_TOPIC_STATUS, gate_state_payloads[this->state]);
+	} else {
+		Serial.println("Unknown state, cannot pub /n");
+	}
 }
 
 void Gate::publishPos() {
-	Serial.println("mqtt gate_pos update: ");
+	Serial.println("mqtt gate_pos update: /n");
 	char pos[8];
 	itoa(this->position, pos, 10);
   this->client->publish(MQTT_GATE_TOPIC_POSITION, pos);
@@ -85,7 +89,7 @@ void Gate::publishPos() {
 
 void Gate::checkLightState() {
   int prev_light_state = this->light;
-  Serial.println("Checking light state");
+  Serial.println("Checking light state /n");
 
   if (digitalRead(this->gpio_state_light_on) == HIGH) {
     this->light = LIGHT_ON;
@@ -101,14 +105,18 @@ void Gate::checkLightState() {
 }
 
 void Gate::publishLightState() {
-  Serial.println("mqtt light update: ");
-  Serial.println(light_state_payloads[this->light]);
-  client->publish(MQTT_LIGHT_TOPIC_STATUS, light_state_payloads[this->light]);
+	if (this->light != LIGHT_UNKNOWN){
+		Serial.println("mqtt light update: /n");
+		Serial.println(light_state_payloads[this->light]);
+		client->publish(MQTT_LIGHT_TOPIC_STATUS, light_state_payloads[this->light]);
+	} else {
+		Serial.println("Unknown light state, cannot pub /n");
+	}
 }
 
 
 void Gate::triggerGate(int pin) {
-  Serial.println("writing to pin");
+  Serial.println("writing to pin /n");
   Serial.println(pin);
   digitalWrite(pin, LOW);
   delay(SWITCH_DELAY);
@@ -117,7 +125,7 @@ void Gate::triggerGate(int pin) {
 
 
 void Gate::openGate() {
-  Serial.println("open_gate starting");
+  Serial.println("open_gate starting /n");
   this->triggerGate(this->gpio_command_gate_open);
 	if ( this->pinState() == PIN_BETWEEN ){
 		this->state = GATE_OPENING;
@@ -128,7 +136,7 @@ void Gate::openGate() {
 
 
 void Gate::closeGate() {
-  Serial.println("close_gate starting");
+  Serial.println("close_gate starting /n");
   this->triggerGate(this->gpio_command_gate_close);
 	if ( this->pinState() == PIN_BETWEEN ){
 		this->state = GATE_CLOSING;
@@ -138,7 +146,7 @@ void Gate::closeGate() {
 }
 
 void Gate::stopGate() {
-  Serial.println("stop_gate starting");
+  Serial.println("stop_gate starting /n");
   this->triggerGate(this->gpio_command_gate_stop);
 	if ( this->pinState() == PIN_BETWEEN ){
 		this->state = GATE_STOPPED;
@@ -149,11 +157,11 @@ void Gate::stopGate() {
 void Gate::triggerLight(bool on) {
   if (on) {
 
-    Serial.println("Turning light on");
+    Serial.println("Turning light on /n");
     digitalWrite(this->gpio_command_light_on, HIGH);
   }
   else {
-    Serial.println("Turning light off");
+    Serial.println("Turning light off /n");
     digitalWrite(this->gpio_command_light_on, LOW);
   }
 }
@@ -162,7 +170,7 @@ void Gate::triggerLight(bool on) {
 void Gate::activate(char* topic, byte* payload, unsigned int length) {
   payload[length] = 0;
 
-  Serial.println("mqtt call back");
+  Serial.println("Mqtt call back /n");
   Serial.println( topic );
   Serial.println(  (const char *) payload );
   if (strstr( MQTT_GATE_TOPIC_CMD, topic) != NULL) {

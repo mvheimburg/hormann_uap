@@ -11,8 +11,8 @@
 #include "mqtt_specs.h"
 
 enum pin_states { PIN_OPEN, PIN_CLOSED, PIN_BETWEEN };
-enum gate_states { GATE_OPEN, GATE_OPENING, GATE_CLOSED, GATE_CLOSING, GATE_STOPPED, GATE_UNCHANGED };
-enum light_states { LIGHT_ON, LIGHT_OFF, LIGHT_UNCHANGED };
+enum gate_states { GATE_OPEN, GATE_OPENING, GATE_CLOSED, GATE_CLOSING, GATE_STOPPED, GATE_UNKNOWN };
+enum light_states { LIGHT_ON, LIGHT_OFF, LIGHT_UNKNOWN };
 
 const char* const gate_state_payloads[] = { PAYLOAD_GATE_OPENED, PAYLOAD_GATE_OPENING, PAYLOAD_GATE_CLOSED, PAYLOAD_GATE_CLOSING };
 const char* const light_state_payloads[] = { PAYLOAD_LIGHT_ON, PAYLOAD_LIGHT_OFF };
@@ -55,8 +55,8 @@ private:
 
     bool moving = false;
     int position = 0;
-    gate_states state = GATE_UNCHANGED;
-    light_states light = LIGHT_UNCHANGED;
+    gate_states state = GATE_UNKNOWN;
+    light_states light = LIGHT_UNKNOWN;
 
 
 
