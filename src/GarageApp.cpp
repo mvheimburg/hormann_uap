@@ -222,6 +222,7 @@ static void handleCmd(const char* payload) {
 }
 
 static void onMqttOnline() {
+  Serial.println(F("[APP] onMqttOnline()"));
   haPublishDiscovery();
   syncFromHardware(true);
 }
@@ -248,19 +249,7 @@ void appSetup() {
   Serial.begin(115200);
   while (!Serial) { ; }
 
-  if (!cfgLoad(g_cfg)) {
-    cfgSetDefaults(g_cfg);
-    cfgSave(g_cfg);
-    Serial.println(F("Default config saved to EEPROM."));
-  } else {
-    Serial.println(F("Config loaded from EEPROM."));
-  }
-  GarageConfig loadedCfg = g_cfg;
-  cfgApplySecrets(g_cfg);
-  if (memcmp(&loadedCfg, &g_cfg, sizeof(GarageConfig) - sizeof(uint16_t)) != 0) {
-    cfgSave(g_cfg);
-    Serial.println(F("Applied overrides from secrets.h."));
-  }
+  cfgInit();
 
   hardwareBegin();
 
@@ -270,9 +259,9 @@ void appSetup() {
   mqttSetHAOnlineHandler(onMqttOnline);
 
   Serial.print(F("IP: ")); Serial.println(netLocalIP());
-  Serial.print(F("Broker: ")); Serial.print(g_cfg.broker); Serial.print(F(":")); Serial.println(g_cfg.port);
-  Serial.print(F("MQTT cmd: ")); Serial.println(g_cfg.topicCmd);
-  Serial.print(F("MQTT status: ")); Serial.println(g_cfg.topicStatus);
+  Serial.print(F("Broker: ")); Serial.print(cfgBrokerIP()); Serial.print(F(":")); Serial.println(cfgBrokerPort());
+  Serial.print(F("MQTT cmd: ")); Serial.println(cfgTopicCmd());
+  Serial.print(F("MQTT status: ")); Serial.println(cfgTopicStatus());
 }
 
 void appLoop() {

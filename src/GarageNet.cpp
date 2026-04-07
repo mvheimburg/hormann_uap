@@ -31,7 +31,7 @@ void netBegin() {
   uint8_t cfgMask[4] = DEVICE_MASK;
   mask = IPAddress(cfgMask[0], cfgMask[1], cfgMask[2], cfgMask[3]);
 #endif
-  Ethernet.begin(g_cfg.mac, ip, dns, gw, mask);
+  Ethernet.begin(cfgMac(), ip, dns, gw, mask);
   delay(100);
 }
 

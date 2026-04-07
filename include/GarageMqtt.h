@@ -17,5 +17,7 @@ void mqttBegin(CmdHandler handler = nullptr);
 void mqttEnsureConnected();
 void mqttLoop();
 bool mqttPublishStatus(const char* payload, bool retain);
+bool mqttPublishLarge(const char* topic, const char* payload, bool retain);
+uint16_t mqttBufferSize();
 PubSubClient* mqttClient();
 void mqttSetHAOnlineHandler(SimpleHandler handler);

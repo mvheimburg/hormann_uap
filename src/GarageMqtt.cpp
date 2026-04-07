@@ -1,107 +1,86 @@
 #include "GarageMqtt.h"
 #include "GarageConfig.h"
+#include "GarageHA.h"
+#include <ArduinoHA.h>
 #include <Ethernet.h>
-#include <PubSubClient.h>
-#include <avr/pgmspace.h>
 
+namespace {
 static EthernetClient s_eth;
-static PubSubClient s_mqtt(s_eth);
-
-static const unsigned long KEEPALIVE = 15;
-static const unsigned long SOCKET_TIMEOUT = 15;
-static unsigned long s_lastAttempt = 0;
-static unsigned long s_backoff = 2000;
-static const unsigned long BACKOFF_MAX = 60000;
-static CmdHandler s_handler = nullptr;
+static HADevice s_device;
+static HAMqtt* s_mqtt = nullptr;
 static SimpleHandler s_haOnlineHandler = nullptr;
 
-static const char LWT_ON[] = "online";
-static const char LWT_OFF[] = "offline";
-
-static void subscribeAll() {
-  char haTopic[] = "homeassistant/status";
-  s_mqtt.subscribe(g_cfg.topicCmd);
-  s_mqtt.subscribe(haTopic);
-}
-
-static bool isOnlinePayload(const char* payload) {
-  return payload && (strcmp(payload, "online") == 0 || strcmp(payload, "birth") == 0);
-}
-
-static void notifyHaOnline() {
+void onConnected() {
+  Serial.println(F("[MQTT] CONNECT OK (ArduinoHA)"));
   if (s_haOnlineHandler) s_haOnlineHandler();
 }
 
-static void mqttMsg(char* topic, byte* payload, unsigned int len) {
-  // ensure null-terminated small buffer
-  static char buf[16];
-  unsigned int n = (len < sizeof(buf)-1) ? len : sizeof(buf)-1;
-  memcpy(buf, payload, n);
-  buf[n] = 0;
-
-  if (strcmp(topic, g_cfg.topicCmd) == 0) {
-    if (s_handler) s_handler(buf);
-    return;
-  }
-
-  if (strcmp_P(topic, PSTR("homeassistant/status")) == 0 && isOnlinePayload(buf)) {
-    notifyHaOnline();
-  }
+void onStateChanged(HAMqtt::ConnectionState state) {
+  if (state == HAMqtt::StateConnected) return;
+  Serial.print(F("[MQTT] State="));
+  Serial.println((int)state);
 }
+}  // namespace
 
 void mqttBegin(CmdHandler handler) {
-  s_handler = handler;
-  s_mqtt.setServer(g_cfg.broker, g_cfg.port);
-  s_mqtt.setKeepAlive(KEEPALIVE);
-  s_mqtt.setSocketTimeout(SOCKET_TIMEOUT);
-  s_mqtt.setBufferSize(256);
-  s_mqtt.setCallback(mqttMsg);
-}
+  haSetCommandHandler(handler);
 
-static bool connectNow() {
-  if (strlen(g_cfg.user) > 0) {
-    if (s_mqtt.connect(g_cfg.clientId, g_cfg.user, g_cfg.pass, g_cfg.topicStatus, 1, true, LWT_OFF, true)) {
-      s_mqtt.publish(g_cfg.topicStatus, LWT_ON, true);
-      subscribeAll();
-      s_backoff = 2000;
-      notifyHaOnline();
-      return true;
-    }
-  } else {
-    if (s_mqtt.connect(g_cfg.clientId, nullptr, nullptr, g_cfg.topicStatus, 1, true, LWT_OFF, true)) {
-      s_mqtt.publish(g_cfg.topicStatus, LWT_ON, true);
-      subscribeAll();
-      s_backoff = 2000;
-      notifyHaOnline();
-      return true;
-    }
+  if (!s_device.getUniqueId()) {
+    s_device.setUniqueId(cfgMac(), 6);
+    s_device.enableExtendedUniqueIds();
+    s_device.setName("Garage Controller");
+    s_device.setManufacturer("DIY");
+    s_device.setModel("W5500 Gate");
   }
-  return false;
+
+  if (!s_mqtt) {
+    s_mqtt = new HAMqtt(s_eth, s_device, 6);
+    if (!s_mqtt) {
+      Serial.println(F("[MQTT] HAMqtt allocation failed"));
+      return;
+    }
+    s_mqtt->setDiscoveryPrefix("homeassistant");
+    s_mqtt->setKeepAlive(15);
+    s_mqtt->setBufferSize(256);
+    s_mqtt->onConnected(onConnected);
+    s_mqtt->onStateChanged(onStateChanged);
+  }
+
+  if (strlen(cfgMqttUser()) > 0) {
+    s_mqtt->begin(cfgBrokerIP(), cfgBrokerPort(), cfgMqttUser(), cfgMqttPass());
+  } else {
+    s_mqtt->begin(cfgBrokerIP(), cfgBrokerPort());
+  }
 }
 
 void mqttEnsureConnected() {
-  if (s_mqtt.connected()) return;
-  unsigned long now = millis();
-  if (now - s_lastAttempt >= s_backoff) {
-    s_lastAttempt = now;
-    s_mqtt.setServer(g_cfg.broker, g_cfg.port); // in case cfg changed
-    if (!connectNow()) {
-      if (s_backoff < BACKOFF_MAX) s_backoff *= 2;
-      if (s_backoff > BACKOFF_MAX) s_backoff = BACKOFF_MAX;
-    }
-  }
+  // ArduinoHA manages reconnects internally from mqttLoop().
 }
 
 void mqttLoop() {
-  s_mqtt.loop();
+  if (s_mqtt) s_mqtt->loop();
 }
 
 bool mqttPublishStatus(const char* payload, bool retain) {
-  if (!s_mqtt.connected()) return false;
-  return s_mqtt.publish(g_cfg.topicStatus, payload, retain);
+  if (!s_mqtt) return false;
+  return s_mqtt->publish(cfgTopicStatus(), payload ? payload : "", retain);
 }
 
-PubSubClient* mqttClient() { return &s_mqtt; }
+bool mqttPublishLarge(const char* topic, const char* payload, bool retain) {
+  if (!s_mqtt || !topic || !payload) return false;
+  const uint16_t n = (uint16_t)strlen(payload);
+  if (!s_mqtt->beginPublish(topic, n, retain)) return false;
+  s_mqtt->writePayload(payload, n);
+  return s_mqtt->endPublish();
+}
+
+uint16_t mqttBufferSize() {
+  return 256;
+}
+
+PubSubClient* mqttClient() {
+  return nullptr;
+}
 
 void mqttSetHAOnlineHandler(SimpleHandler handler) {
   s_haOnlineHandler = handler;
