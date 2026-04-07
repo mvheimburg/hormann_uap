@@ -4,6 +4,13 @@ Home Asssitant over MQTT.
 
 Inspired by https://github.com/hpd96/garagentor-esp8266
 
+MQTT behavior:
+- The controller publishes `online` / `offline` availability with LWT.
+- It reconnects to the broker with backoff if MQTT drops.
+- It publishes Home Assistant MQTT discovery for a `cover` entity and a `switch` for the light under the `homeassistant` prefix.
+- The discovered cover uses the `garage` device class and retained discovery/state/position topics.
+- The firmware uses a static IPv4 address (`192.168.1.200`) so it can stay within Uno RAM limits without DHCP.
+
 
 OUTPUTS:
 Connect Arduino PIN 08 to S3 of the UAP1 - Open gate
@@ -17,4 +24,3 @@ INPUTS:
 Connect Arduino PIN 02 to 01.8 of the UAP1 - Gate open
 Connect Arduino PIN 03 to 02.8 of the UAP1 - Gate closed
 Connect Arduino PIN 04 to 03.8 of the UAP1 - Light on/off
-

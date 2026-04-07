@@ -1,0 +1,30 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "Ubuntu",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/base:noble",
+	"privileged": true,
+	"mounts": [
+		"source=/dev/bus/usb,target=/dev/bus/usb,type=bind,consistency=cached",
+		"source=/run/udev,target=/run/udev,type=bind,consistency=cached"
+	],
+	"features": {
+		"ghcr.io/devcontainer-community/devcontainer-features/collection-c-cpp:1": {},
+		"ghcr.io/devcontainers/features/python:1": {"version":3.14}
+	},
+	"remoteEnv": {
+		"PATH": "${containerEnv:PATH}:/home/vscode/.local/bin"
+	},
+	"postCreateCommand": "python3 -m pip install --user --upgrade platformio",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"platformio.platformio-ide",
+				"openai.chatgpt"
+			]
+		}
+	},
+	"runArgs": ["--device=/dev/ttyACM0:/dev/ttyACM0"]
+}
+

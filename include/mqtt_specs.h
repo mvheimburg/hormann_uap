@@ -14,7 +14,6 @@
 #define PAYLOAD_GATE_CLOSED "closed"
 #define PAYLOAD_GATE_CLOSING "closing"
 
-
 #define MQTT_GATE_TOPIC_POSITION "garage/gate/position"
 #define GATE_POS_OPEN 100
 #define GATE_POS_CLOSED 0
