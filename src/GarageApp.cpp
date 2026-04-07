@@ -4,6 +4,10 @@
 #include "GarageMqtt.h"
 #include "GarageHA.h"
 
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
 namespace {
 constexpr uint8_t GPIO_STATE_GATE_OPEN = 2;
 constexpr uint8_t GPIO_STATE_GATE_CLOSED = 3;
@@ -13,19 +17,39 @@ constexpr uint8_t GPIO_CMD_GATE_CLOSE = A1;
 constexpr uint8_t GPIO_CMD_GATE_STOP = A2;
 constexpr uint8_t GPIO_CMD_LIGHT = A3;
 constexpr unsigned long SWITCH_DELAY_MS = 500;
+#ifdef GATE_TRAVEL_DOWN_SEC
+constexpr unsigned long GATE_SPD_DOWN_SEC = GATE_TRAVEL_DOWN_SEC;
+#else
 constexpr unsigned long GATE_SPD_DOWN_SEC = 19;
+#endif
+#ifdef GATE_TRAVEL_UP_SEC
+constexpr unsigned long GATE_SPD_UP_SEC = GATE_TRAVEL_UP_SEC;
+#else
 constexpr unsigned long GATE_SPD_UP_SEC = 13;
+#endif
+#ifdef GATE_DIRECTION_INVERTED
+constexpr bool GATE_DIR_INVERTED = (GATE_DIRECTION_INVERTED != 0);
+#else
+constexpr bool GATE_DIR_INVERTED = false;
+#endif
+#ifdef GATE_POSITION_ENABLED
+constexpr bool GATE_POS_ENABLED = (GATE_POSITION_ENABLED != 0);
+#else
+constexpr bool GATE_POS_ENABLED = false;
+#endif
 constexpr int GATE_POS_OPEN = 100;
 constexpr int GATE_POS_CLOSED = 0;
 
 enum GatePinState { PIN_OPEN, PIN_CLOSED, PIN_BETWEEN };
 enum GateState { GATE_OPEN, GATE_OPENING, GATE_CLOSED, GATE_CLOSING, GATE_STOPPED, GATE_UNKNOWN };
 enum LightState { LIGHT_ON, LIGHT_OFF, LIGHT_UNKNOWN };
+enum MotionHint { MOVE_NONE, MOVE_OPENING, MOVE_CLOSING };
 
 static GateState s_gateState = GATE_UNKNOWN;
 static LightState s_lightState = LIGHT_UNKNOWN;
 static int s_gatePosition = 0;
 static unsigned long s_lastMoveAt = 0;
+static MotionHint s_motionHint = MOVE_NONE;
 
 static bool sameToken(const char* lhs, const char* rhs) {
   if (!lhs || !rhs) return false;
@@ -78,11 +102,20 @@ static void triggerRelay(uint8_t pin) {
   digitalWrite(pin, HIGH);
 }
 
+static uint8_t relayForOpenCmd() {
+  return GATE_DIR_INVERTED ? GPIO_CMD_GATE_CLOSE : GPIO_CMD_GATE_OPEN;
+}
+
+static uint8_t relayForCloseCmd() {
+  return GATE_DIR_INVERTED ? GPIO_CMD_GATE_OPEN : GPIO_CMD_GATE_CLOSE;
+}
+
 static void publishGateState() {
   haSetState(gateStateText(s_gateState));
 }
 
 static void publishGatePosition() {
+  if (!GATE_POS_ENABLED) return;
   haSetPosition(s_gatePosition);
 }
 
@@ -103,22 +136,28 @@ static void updateGateState(bool forcePublish) {
   GateState prev = s_gateState;
   unsigned long now = millis();
   bool publishState = forcePublish;
-  bool publishPosition = forcePublish;
+  bool publishPosition = forcePublish && GATE_POS_ENABLED;
 
   if (pinState == PIN_OPEN) {
     s_gateState = GATE_OPEN;
     s_gatePosition = GATE_POS_OPEN;
     s_lastMoveAt = now;
+    s_motionHint = MOVE_NONE;
     publishState = forcePublish || prev != s_gateState;
-    publishPosition = forcePublish || publishState;
+    publishPosition = GATE_POS_ENABLED && (forcePublish || publishState);
   } else if (pinState == PIN_CLOSED) {
     s_gateState = GATE_CLOSED;
     s_gatePosition = GATE_POS_CLOSED;
     s_lastMoveAt = now;
+    s_motionHint = MOVE_NONE;
     publishState = forcePublish || prev != s_gateState;
-    publishPosition = forcePublish || publishState;
+    publishPosition = GATE_POS_ENABLED && (forcePublish || publishState);
   } else {
-    if (s_gateState == GATE_OPEN || s_gateState == GATE_OPENING) {
+    if (s_motionHint == MOVE_OPENING) {
+      s_gateState = GATE_OPENING;
+    } else if (s_motionHint == MOVE_CLOSING) {
+      s_gateState = GATE_CLOSING;
+    } else if (s_gateState == GATE_OPEN || s_gateState == GATE_OPENING) {
       s_gateState = GATE_OPENING;
     } else if (s_gateState == GATE_CLOSED || s_gateState == GATE_CLOSING) {
       s_gateState = GATE_CLOSING;
@@ -126,7 +165,7 @@ static void updateGateState(bool forcePublish) {
       s_gateState = GATE_STOPPED;
     }
 
-    if (s_gateState == GATE_OPENING || s_gateState == GATE_CLOSING) {
+    if (GATE_POS_ENABLED && (s_gateState == GATE_OPENING || s_gateState == GATE_CLOSING)) {
       unsigned long elapsed = now - s_lastMoveAt;
       if (elapsed >= 200 || forcePublish) {
         unsigned long speedSec = (s_gateState == GATE_OPENING) ? GATE_SPD_UP_SEC : GATE_SPD_DOWN_SEC;
@@ -168,8 +207,9 @@ static void syncFromHardware(bool forcePublish) {
 }
 
 static void openGate() {
-  triggerRelay(GPIO_CMD_GATE_OPEN);
+  triggerRelay(relayForOpenCmd());
   if (readGatePins() == PIN_BETWEEN) {
+    s_motionHint = MOVE_OPENING;
     s_gateState = GATE_OPENING;
     s_lastMoveAt = millis();
     publishGateState();
@@ -179,8 +219,9 @@ static void openGate() {
 }
 
 static void closeGate() {
-  triggerRelay(GPIO_CMD_GATE_CLOSE);
+  triggerRelay(relayForCloseCmd());
   if (readGatePins() == PIN_BETWEEN) {
+    s_motionHint = MOVE_CLOSING;
     s_gateState = GATE_CLOSING;
     s_lastMoveAt = millis();
     publishGateState();
@@ -191,6 +232,7 @@ static void closeGate() {
 
 static void stopGate() {
   triggerRelay(GPIO_CMD_GATE_STOP);
+  s_motionHint = MOVE_NONE;
   if (readGatePins() == PIN_BETWEEN) {
     s_gateState = GATE_STOPPED;
     publishGateState();
@@ -262,6 +304,9 @@ void appSetup() {
   Serial.print(F("Broker: ")); Serial.print(cfgBrokerIP()); Serial.print(F(":")); Serial.println(cfgBrokerPort());
   Serial.print(F("MQTT cmd: ")); Serial.println(cfgTopicCmd());
   Serial.print(F("MQTT status: ")); Serial.println(cfgTopicStatus());
+  Serial.print(F("Gate up/down sec: ")); Serial.print(GATE_SPD_UP_SEC); Serial.print(F("/")); Serial.println(GATE_SPD_DOWN_SEC);
+  Serial.print(F("Gate dir inverted: ")); Serial.println(GATE_DIR_INVERTED ? F("yes") : F("no"));
+  Serial.print(F("Gate position enabled: ")); Serial.println(GATE_POS_ENABLED ? F("yes") : F("no"));
 }
 
 void appLoop() {
